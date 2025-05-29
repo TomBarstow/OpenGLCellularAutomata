@@ -1,0 +1,161 @@
+#version 430
+
+layout (local_size_x = 16, local_size_y = 16) in;  // Match dispatch size in main.cpp
+
+layout(rgba8ui, binding = 0) uniform readonly uimage2D uInput;
+layout(rgba8ui, binding = 1) uniform writeonly uimage2D uOutput;
+
+uniform ivec2 uResolution;
+uniform int uFrame;
+
+uint rand(ivec2 co) {
+    float f = fract(sin(dot(vec2(co), vec2(12.9898, 78.233))) * 43758.5453);
+    return uint(f * 256.0);
+}
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (pos.x >= uResolution.x || pos.y >= uResolution.y) return;
+
+    uvec4 cell = imageLoad(uInput, pos);  // Keep as uvec4
+
+    // ─────────────────────────────────────────────────────────────
+    // INIT PASS: Add blue rectangles (material cells) and yellow rectangles
+    // ─────────────────────────────────────────────────────────────
+    if (uFrame == 0) {
+        // Blue rectangles
+        if (pos.x % 80 == 0 && pos.y % 80 == 0) { // Only check every 80th cell for 40x40 rectangles
+            if (rand(pos) < 200u) { // ~78% chance for grid positions (10x more dense)
+                bool canPlace = true;
+
+                // Check if the 40x40 area is within bounds (no collision checking)
+                for (int y = 0; y < 40; ++y)
+                for (int x = 0; x < 40; ++x) {
+                    ivec2 check = pos + ivec2(x, y);
+                    if (check.x >= uResolution.x || check.y >= uResolution.y) {
+                        canPlace = false;
+                        break;
+                    }
+                }
+
+                // Place 40x40 block of blue
+                if (canPlace) {
+                    for (int y = 0; y < 40; ++y)
+                    for (int x = 0; x < 40; ++x) {
+                        ivec2 fill = pos + ivec2(x, y);
+                        if (fill.x < uResolution.x && fill.y < uResolution.y) {
+                            imageStore(uOutput, fill, uvec4(2, 0, 0, 0)); // state 2 = blue
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+        
+        // Yellow rectangles
+        if (pos.x % 80 == 40 && pos.y % 80 == 40) { // Offset grid positions for yellow
+            if (rand(pos + ivec2(1, 1)) < 50u) { // ~20% chance (1/4 of 78%), different seed
+                bool canPlace = true;
+
+                // Check if the 40x40 area is within bounds
+                for (int y = 0; y < 40; ++y)
+                for (int x = 0; x < 40; ++x) {
+                    ivec2 check = pos + ivec2(x, y);
+                    if (check.x >= uResolution.x || check.y >= uResolution.y) {
+                        canPlace = false;
+                        break;
+                    }
+                }
+
+                // Place 40x40 block of yellow
+                if (canPlace) {
+                    for (int y = 0; y < 40; ++y)
+                    for (int x = 0; x < 40; ++x) {
+                        ivec2 fill = pos + ivec2(x, y);
+                        if (fill.x < uResolution.x && fill.y < uResolution.y) {
+                            imageStore(uOutput, fill, uvec4(3, 0, 0, 0)); // state 3 = yellow
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+
+        // Otherwise copy original cell
+        imageStore(uOutput, pos, cell);  // Keep as uvec4
+        return;
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // GAME OF LIFE + BLUE MATERIAL + YELLOW EXPANSION RULES
+    // ─────────────────────────────────────────────────────────────
+    uint state = cell.r;
+    uint materialAge = cell.g;  // Used for both blue and yellow aging
+
+    uint neighborCount = 0;
+    uint livingNeighbors = 0;
+    bool hasYellowNeighbor = false;
+
+    for (int y = -1; y <= 1; ++y)
+    for (int x = -1; x <= 1; ++x) {
+        if (x == 0 && y == 0) continue;
+        ivec2 n = pos + ivec2(x, y);
+        if (n.x < 0 || n.y < 0 || n.x >= uResolution.x || n.y >= uResolution.y) continue;
+        uint neighborState = imageLoad(uInput, n).r;
+        if (neighborState == 1u) {
+            neighborCount++;
+            livingNeighbors++;
+        } else if (neighborState == 3u) {
+            hasYellowNeighbor = true;
+        }
+    }
+
+    // Yellow cell: erosion and expansion logic
+    if (state == 3u) {
+        // Living cells kill yellow cells immediately (every tick)
+        if (livingNeighbors > 0) {
+            imageStore(uOutput, pos, uvec4(0, 0, 0, 0)); // killed by living cells
+        } else {
+            imageStore(uOutput, pos, uvec4(3, 0, 0, 0)); // persist yellow (no aging needed)
+        }
+        return;
+    }
+
+    // Blue cell: check consecutive living neighbors for erosion
+    if (state == 2u) {
+        if (livingNeighbors > 0) {
+            materialAge++;
+        } else {
+            materialAge = 0;
+        }
+
+        if (materialAge >= 2u) {
+            imageStore(uOutput, pos, uvec4(0, 0, 0, 0)); // eroded by living cells
+        } else {
+            imageStore(uOutput, pos, uvec4(2, materialAge, 0, 0)); // persist blue
+        }
+        return;
+    }
+
+    // Alive cell: normal Life rules
+    if (state == 1u) {
+        if (neighborCount < 2 || neighborCount > 3) {
+            imageStore(uOutput, pos, uvec4(0, 0, 0, 0)); // dies
+        } else {
+            imageStore(uOutput, pos, uvec4(1, 0, 0, 0)); // survives
+        }
+        return;
+    }
+
+    // Dead cell: birth if 3 neighbors OR yellow expansion every 10 frames
+    if (state == 0u) {
+        if (neighborCount == 3) {
+            imageStore(uOutput, pos, uvec4(1, 0, 0, 0)); // born from Game of Life
+        } else if (hasYellowNeighbor && (uFrame % 10 == 0)) {
+            imageStore(uOutput, pos, uvec4(3, 0, 0, 0)); // yellow expansion
+        } else {
+            imageStore(uOutput, pos, uvec4(0, 0, 0, 0)); // stays dead
+        }
+        return;
+    }
+}

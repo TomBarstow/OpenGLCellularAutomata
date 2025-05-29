@@ -35,23 +35,36 @@ public:
     }
 
     void step() {
+        
+        static int frameCount = 0;  // Add frame counter
+        
         glUseProgram(computeProgram);
 
         GLuint inputTex = useTextureA ? textureA : textureB;
         GLuint outputTex = useTextureA ? textureB : textureA;
 
-        glBindImageTexture(0, inputTex, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32UI);
-        glBindImageTexture(1, outputTex, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32UI);
+        //GL_RGBA8UI implementation for storing 4 channel, 8bit value per cell
+        glBindImageTexture(0, inputTex, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA8UI);
+        glBindImageTexture(1, outputTex, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8UI);
+        //GL_R32UI implementation for storing one 32bit value per cell
+        //glBindImageTexture(0, inputTex, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32UI);
+        //glBindImageTexture(1, outputTex, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32UI);
 
         glDispatchCompute((width + 15) / 16, (height + 15) / 16, 1);
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
         useTextureA = !useTextureA;
+
+        frameCount++;  // Increment frame counter
     }
 
     void render() {
+        //glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         glUseProgram(renderProgram);
+
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, useTextureA ? textureA : textureB);
@@ -158,7 +171,10 @@ private:
 
         for (GLuint tex : {textureA, textureB}) {
             glBindTexture(GL_TEXTURE_2D, tex);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_R32UI, width, height, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, NULL);
+            //GL_RGBA8UI implementation for storing 4 channel, 8bit value per cell
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8UI, width, height, 0, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, NULL);
+            //GL_R32UI implementation for storing one 32bit value per cell
+            //glTexImage2D(GL_TEXTURE_2D, 0, GL_R32UI, width, height, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, NULL);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
@@ -167,17 +183,21 @@ private:
     }
 
     void initializeGrid() {
-        std::vector<uint32_t> data(width * height);
+        std::vector<uint8_t> data(width * height * 4);  // uint8_t for 8-bit channels
         std::random_device rd;
         std::mt19937 gen(rd());
         std::uniform_real_distribution<> dis(0.0, 1.0);
 
         for (int i = 0; i < width * height; i++) {
-            data[i] = (dis(gen) < 0.3) ? 1 : 0;
+            bool isAlive = dis(gen) < 0.3;
+            data[i * 4 + 0] = isAlive ? 255 : 0;      // R channel
+            data[i * 4 + 1] = isAlive ? 255 : 0;      // G channel
+            data[i * 4 + 2] = isAlive ? 255 : 0;      // B channel 
+            data[i * 4 + 3] = isAlive ? 255 : 0;      // A channel
         }
 
         glBindTexture(GL_TEXTURE_2D, textureA);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RED_INTEGER, GL_UNSIGNED_INT, data.data());
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE, data.data());
     }
 
     void setupQuad() {
